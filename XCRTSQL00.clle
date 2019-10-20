@@ -1,0 +1,174 @@
+/* ----------------------------------------------------------------- */
+/*  XCRTSQL00                                                        */
+/*  Create SQL object                                                */
+/*                                                                   */
+/*  Creates an object from an SQL script stored in a source file     */
+/*    member or in an IFS stream file                                */
+/*                                                                   */
+/*  The member type of sources must be one of the following:         */
+/*                                                                   */
+/*  - SQL        : generic source                                    */
+/*  - SQLTABLE   : table                                             */
+/*  - SQLVIEW    : view                                              */
+/*  - SQLINDEX   : index                                             */
+/*  - SQLUDF     : function                                          */
+/*  - SQLTRG     : trigger                                           */
+/*  - SQLALIAS   : alias                                             */
+/*  - SQLPROC    : procedure                                         */
+/*                                                                   */
+/* ----------------------------------------------------------------- */
+  pgm  parm(&ObjLib &SrcLib &SrcFile &SrcMbr &StmF &TgtRls)
+
+/* Parameters                                                */
+  dcl  &ObjLib      *char   10       /* Object library       */
+  dcl  &SrcLib      *char   10       /* Source library       */
+  dcl  &SrcFile     *char   10       /* Source file          */
+  dcl  &SrcMbr      *char   10       /* Source member        */
+  dcl  &StmF        *char  250       /* Stream file          */
+  dcl  &TgtRls      *char   10       /* Target release       */
+/* other variabiles                                          */
+  dcl  &SrcType     *char   10       /* Source type          */
+  dcl  &Job         *char   10
+  dcl  &JobType     *char   1
+  dcl  &User        *char   10
+  dcl  &sql         *char   800
+  dcl  &ap          *char   1 value('''')
+  dcl  &NewMbr      *char   180
+  dcl  &SqlMbr      *char   10
+  dcl  &msg         *char   200
+  dcl  &table       *char   10
+  dcl  &margin      *char   3
+  dcl  &error       *lgl    1 value('0')
+
+ RTVJOBA    TYPE(&JobType) JOB(&Job) USER(&User)
+
+/* Process source                       */
+SELECT
+   WHEN COND(&StmF = ' ')    THEN(CALLSUBR SUBR(FromMbr))
+   WHEN COND(&StmF *NE ' ')  THEN(CALLSUBR SUBR(FromIFS))
+ENDSELECT
+
+/* Send completion message */
+IF COND(&error *NE '1') THEN(DO)
+    CHGVAR  &msg VALUE('Object ' *CAT &srcMbr *TCAT +
+            ' of type ' *CAT &srcType *TCAT +
+            ' created in library ' *CAT &objLib )
+    CALLSUBR SUBR(sendMsg)
+ENDDO
+/*------------------------------------------------------------*/
+/* Process source file member                                 */
+/*------------------------------------------------------------*/
+
+ SUBR FromMbr
+
+ RTVMBRD    FILE(&Srclib/&Srcfile) MBR(&Srcmbr) SRCTYPE(&Srctype)
+ /* If source member does not exist, set an invalid member type */
+ MONMSG     MSGID(CPF9815) EXEC(DO)
+    CHGVAR  &msg VALUE('Source member does not exist')
+    CHGVAR  &SrcType VALUE('**********')
+    CHGVAR  &error VALUE('1')
+    CALLSUBR SUBR(sendMsg)
+ ENDDO
+
+ CHGVAR  VAR(&SqlMbr) VALUE(&SrcMbr)
+
+ CALLSUBR SUBR(elabSQL)
+
+ ENDSUBR
+
+/*------------------------------------------------------------*/
+/* Process stream file                                        */
+/*------------------------------------------------------------*/
+ SUBR FromIFS
+
+ /* For stream file, sets a default source type SQL */
+
+ CHGVAR  VAR(&SrcType) VALUE('SQL')
+ CALLSUBR SUBR(elabSQL)
+
+ ENDSUBR
+/*------------------------------------------------------------*/
+/* Process command                                            */
+/*------------------------------------------------------------*/
+
+ SUBR elabSQL
+
+ IF   COND((&SRCTYPE *EQ 'SQL') +
+      *OR  (&SRCTYPE *EQ 'SQLTABLE')  +
+      *OR  (&SRCTYPE *EQ 'SQLVIEW')  +
+      *OR  (&SRCTYPE *EQ 'SQLUDF') +
+      *OR  (&SRCTYPE *EQ 'SQLTRG') +
+      *OR  (&SRCTYPE *EQ 'SQLINDEX') +
+      *OR  (&SRCTYPE *EQ 'SQLALIAS') +
+      *OR  (&SRCTYPE *EQ 'SQLPROC')) THEN(DO)
+
+
+/* Run SQL script  */
+    SELECT
+    WHEN COND(&Stmf = ' ')   THEN(DO)
+
+/* Retrieves source member length. Needed for proper execution of */
+/*  RUNSQLSTM                                                     */
+    CALL   XCRTSQL01 PARM(&SrcLib &SrcFile &margin)
+
+    RUNSQLSTM  SRCFILE(&SrcLib/&SrcFile) SRCMBR(&SQLMBR) +
+               COMMIT(*NONE) MARGINS(&MARGIN) +
+               OUTPUT(*NONE) TGTRLS(&TGTRLS) DFTRDBCOL(&OBJLIB)
+
+/* Send message for abnormal end                      */
+    MONMSG     MSGID(SQL9010) EXEC(DO)
+       CHGVAR  &msg VALUE('Build of SQL object' *BCAT &sqlMbr *BCAT +
+               'ended abnormally')
+       CALLSUBR SUBR(sendMsg)
+       CHGVAR &error VALUE('1')
+    ENDDO
+
+    ENDDO
+
+/* Process stream file                                            */
+    WHEN COND(&Stmf *NE ' ')   THEN(DO)
+
+    RUNSQLSTM  SRCSTMF(&Stmf) COMMIT(*NONE) +
+               OUTPUT(*NONE) TGTRLS(&TGTRLS) DFTRDBCOL(&OBJLIB)
+
+/* Send message for abnormal end                      */
+    MONMSG     MSGID(SQL9010) EXEC(DO)
+       CHGVAR  &msg VALUE('Build of SQL object' *BCAT &sqlMbr *BCAT +
+               'ended abnormally')
+       CALLSUBR SUBR(sendMsg)
+       CHGVAR &error VALUE('1')
+    ENDDO
+
+    ENDDO
+
+    ENDSELECT
+
+ ENDDO
+/* Send error for unsupported member type     */
+ ELSE CMD(DO)
+    IF COND(&SRCTYPE *NE '**********') THEN(DO)
+       CHGVAR  &msg VALUE('Invalid member type ')
+       CALLSUBR SUBR(sendMsg)
+       CHGVAR  &error VALUE('1')
+    ENDDO
+ ENDDO
+
+ ENDSUBR
+
+/*------------------------------------------------------------*/
+/* Send error message                                         */
+/*------------------------------------------------------------*/
+
+ SUBR sendMsg
+
+    IF COND(&JobType *eq '1') THEN(DO)         /* Interactive */
+       SNDPGMMSG  MSG(&MSG) MSGTYPE(*COMP)
+    ENDDO
+    IF COND(&JobType *eq '0') THEN(DO)         /* Batch       */
+       SNDPGMMSG  MSGID(CPF9898) MSGF(QCPFMSG) MSGDTA(&MSG) +
+                  MSGTYPE(*ESCAPE)
+    ENDDO
+
+ ENDSUBR
+
+ ENDPGM
